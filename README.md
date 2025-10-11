@@ -3,6 +3,7 @@
 A symbolic calculator built with **SymPy** and **Streamlit** to compute Christoffel symbols for arbitrary spacetime metrics in General Relativity.
 
 ## Features
+
 - Compute Christoffel symbols from any metric tensor
 - Predefined GR metrics: Schwarzschild, Kerr, FLRW, Minkowski, etc.
 - Supports custom metric input
@@ -17,6 +18,8 @@ Schwarzschild 4D metric:
  [0, 0, r**2, 0],
  [0, 0, 0, r**2*sin(theta)**2]]
 
-## Try it live :[https://christoffel-symbol-calculator-fzqbkxctohbhcnvvnjnpfz.streamlit.app/](https://christoffel-symbol-calculator-fzqbkxctohbhcnvvnjnpfz.streamlit.app)
 
+## Try it out live :
+**Christoffel Symbol Calculator**
+[Christoffel Symbol Calculator](https://christoffel-symbol-calculator-fzqbkxctohbhcnvvnjnpfz.streamlit.app/)
 
