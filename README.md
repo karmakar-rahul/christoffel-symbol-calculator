@@ -10,6 +10,9 @@ A symbolic calculator built with **SymPy** and **Streamlit** to compute Christof
 - Symbolic simplification and LaTeX output
 - Easy web UI via Streamlit
 
+## Check out the **Christoffel Symbol Calculator** here:
+[Christoffel Symbol Calculator](https://christoffel-symbol-calculator-fzqbkxctohbhcnvvnjnpfz.streamlit.app/)
+
 ## Example Metric
 Schwarzschild 4D metric:
 ```python
@@ -19,7 +22,7 @@ Schwarzschild 4D metric:
  [0, 0, 0, r**2*sin(theta)**2]]
 
 
-## Try it out live :
-**Christoffel Symbol Calculator**
-[Christoffel Symbol Calculator](https://christoffel-symbol-calculator-fzqbkxctohbhcnvvnjnpfz.streamlit.app/)
+
+
+
 
