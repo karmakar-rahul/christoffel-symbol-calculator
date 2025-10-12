@@ -21,22 +21,22 @@ christoffel-symbol-calculator/
 - README.md             - This file
 
 ## To run this app locally :
-- Clone this repository
+- Clone this repository :
 git clone https://github.com/karmakar-rahul
 /christoffel-symbol-calculator.git
 
-- Navigate to the project directory
+- Navigate to the project directory :
 cd christoffel-symbol-calculator
 
-- (Optional) Create a virtual environment
+- (Optional) Create a virtual environment :
 python -m venv venv
 venv\Scripts\activate     # On Windows
 source venv/bin/activate  # On Linux/Mac
 
-- Install dependencies
+- Install dependencies :
 pip install -r requirements.txt
 
-- Run the app
+- Run the app :
 streamlit run app.py
 
 ## Technologies used : 
@@ -48,6 +48,7 @@ streamlit run app.py
 Rahul Karmakar, MSc Physics (Astrophysics Specialization)
 
 ## If you find this tool helpful, give it a star on GitHub! It helps others discover it too :)
+
 
 
 
