@@ -1,286 +1,526 @@
+"""
+app.py  –  Christoffel Symbol Calculator  v2
+Streamlit front-end.
+
+v2 highlights
+• st.cache_data on heavy computations – repeated runs for the same metric
+  are instant (Streamlit caches across reruns within the same session).
+• Tabbed output: Christoffel | Riemann | Ricci | Ricci Scalar | Einstein
+• "Compute only Christoffel" vs "Compute all tensors" selector
+• Non-zero filter with total count banner
+• Download computed LaTeX as a .tex file
+• Collapsible "raw SymPy" view alongside LaTeX for debugging
+• Parallel simplification toggle (helpful for Full simplification level)
+• Improved sidebar with metric preview and coordinate legend
+• Dark-friendly CSS overrides for LaTeX panels
+
+Author : Rahul Karmakar  (v1)
+Updated: v2 improvements
+"""
+
 import streamlit as st
 import sympy as sp
-from christoffel import compute_christoffel
 
-st.set_page_config(page_title="Christoffel Symbol Calculator", page_icon="🌀")
-st.title("Christoffel Symbol Calculator 🌀")
-st.write("Calculate Christoffel symbols for any metric tensor in General Relativity")
+from christoffel import (
+    compute_christoffel,
+    compute_all_tensors,
+    nonzero_christoffel,
+    _resolve_coords,
+    _safe_invert,
+    compute_riemann,
+    compute_ricci_tensor,
+    compute_ricci_scalar,
+    compute_einstein_tensor,
+)
+#  Page config
+st.set_page_config(
+    page_title="Christoffel Symbol Calculator v2",
+    page_icon="🌀",
+    layout="wide",
+)
 
-# Sidebar with examples
-with st.sidebar:
-    st.header("Metric Library")
-    st.markdown("""
-    This calculator includes several important metrics from General Relativity:
-    
-    **Black Holes:**
-    - Schwarzschild (non-rotating, uncharged)
-    - Reissner-Nordström (charged)
-    - Kerr (rotating)
-    - Kerr-Newman (rotating + charged)
-    
-    **Cosmology:**
-    - FLRW (expanding universe)
-    - Minkowski (flat spacetime)
-    
-    **Parameters:**
-    - M: mass
-    - Q: electric charge
-    - a: angular momentum per unit mass
-    - k: spatial curvature (-1, 0, +1)
-    
-    **Functions:**
-    Available: sin, cos, tan, exp, log, sqrt
-    """)
+#  Custom CSS
+st.markdown(
+    """
+    <style>
+    /* ── General layout ── */
+    .block-container { padding-top: 1.5rem; padding-bottom: 2rem; }
 
-# Main input area
-st.subheader("Input Metric Tensor")
-
-# Predefined metrics library
-METRIC_LIBRARY = {
+    /* ── LaTeX result card ── */
+    .gamma-card {
+        background: var(--secondary-background-color, #1e1e2e);
+        border: 1px solid var(--primary-color, #5c5c8a);
+        border-left: 4px solid var(--primary-color, #7c7cf0);
+        border-radius: 8px;
+        padding: 0.6rem 1rem;
+        margin-bottom: 0.5rem;
+        font-size: 1.05rem;
+    }
+    .gamma-label {
+        font-family: monospace;
+        font-size: 0.78rem;
+        color: #aaaacc;
+        margin-bottom: 0.2rem;
+    }
+    .zero-banner {
+        background: #0e2a1f;
+        border-left: 4px solid #2ecc71;
+        border-radius: 6px;
+        padding: 0.5rem 1rem;
+        color: #2ecc71;
+        font-weight: 600;
+    }
+    .count-banner {
+        background: #1a1a3a;
+        border-left: 4px solid #7c7cf0;
+        border-radius: 6px;
+        padding: 0.5rem 1rem;
+        margin-bottom: 0.8rem;
+        color: #c9c9ff;
+    }
+    /* ── Sidebar metric info ── */
+    .metric-info {
+        background: #12122a;
+        border-radius: 8px;
+        padding: 0.6rem 0.8rem;
+        font-size: 0.82rem;
+        color: #aaaacf;
+        margin-bottom: 0.6rem;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+#  Metric library
+METRIC_LIBRARY: dict = {
     "Custom": {
         "metric": "[[1,0,0],[0,r**2,0],[0,0,r**2*sin(theta)**2]]",
         "coords": "r,theta,phi",
-        "description": "Enter your own metric"
-    },
-    "Schwarzschild (3D)": {
-        "metric": "[[1/(1-2*M/r),0,0],[0,r**2,0],[0,0,r**2*sin(theta)**2]]",
-        "coords": "r,theta,phi",
-        "description": "Spherically symmetric vacuum solution (spatial part)"
+        "description": "Enter your own metric tensor",
+        "dim": 3,
+        "params": [],
     },
     "Schwarzschild (4D)": {
-        "metric": "[[-(1-2*M/r),0,0,0],[0,1/(1-2*M/r),0,0],[0,0,r**2,0],[0,0,0,r**2*sin(theta)**2]]",
+        "metric": (
+            "[[-(1-2*M/r),0,0,0],"
+            "[0,1/(1-2*M/r),0,0],"
+            "[0,0,r**2,0],"
+            "[0,0,0,r**2*sin(theta)**2]]"
+        ),
         "coords": "t,r,theta,phi",
-        "description": "Spherically symmetric vacuum black hole"
+        "description": "Spherically symmetric vacuum black hole (M = mass)",
+        "dim": 4,
+        "params": ["M"],
+    },
+    "Schwarzschild (3D spatial)": {
+        "metric": (
+            "[[1/(1-2*M/r),0,0],"
+            "[0,r**2,0],"
+            "[0,0,r**2*sin(theta)**2]]"
+        ),
+        "coords": "r,theta,phi",
+        "description": "Spatial hypersurface of Schwarzschild",
+        "dim": 3,
+        "params": ["M"],
     },
     "Reissner-Nordström": {
-        "metric": "[[-(1-2*M/r+Q**2/r**2),0,0,0],[0,1/(1-2*M/r+Q**2/r**2),0,0],[0,0,r**2,0],[0,0,0,r**2*sin(theta)**2]]",
+        "metric": (
+            "[[-(1-2*M/r+Q**2/r**2),0,0,0],"
+            "[0,1/(1-2*M/r+Q**2/r**2),0,0],"
+            "[0,0,r**2,0],"
+            "[0,0,0,r**2*sin(theta)**2]]"
+        ),
         "coords": "t,r,theta,phi",
-        "description": "Charged black hole (M=mass, Q=charge)"
+        "description": "Charged (non-rotating) black hole  (M = mass, Q = charge)",
+        "dim": 4,
+        "params": ["M", "Q"],
     },
     "Kerr": {
-        "metric": "[[-(1-2*M*r/(r**2+a**2*cos(theta)**2)),0,0,-2*M*r*a*sin(theta)**2/(r**2+a**2*cos(theta)**2)],[0,(r**2+a**2*cos(theta)**2)/(r**2-2*M*r+a**2),0,0],[0,0,r**2+a**2*cos(theta)**2,0],[-2*M*r*a*sin(theta)**2/(r**2+a**2*cos(theta)**2),0,0,(r**2+a**2+2*M*r*a**2*sin(theta)**2/(r**2+a**2*cos(theta)**2))*sin(theta)**2]]",
+        "metric": (
+            "[[-(1-2*M*r/(r**2+a**2*cos(theta)**2)),0,0,"
+            "-2*M*r*a*sin(theta)**2/(r**2+a**2*cos(theta)**2)],"
+            "[0,(r**2+a**2*cos(theta)**2)/(r**2-2*M*r+a**2),0,0],"
+            "[0,0,r**2+a**2*cos(theta)**2,0],"
+            "[-2*M*r*a*sin(theta)**2/(r**2+a**2*cos(theta)**2),0,0,"
+            "(r**2+a**2+2*M*r*a**2*sin(theta)**2/(r**2+a**2*cos(theta)**2))*sin(theta)**2]]"
+        ),
         "coords": "t,r,theta,phi",
-        "description": "Rotating black hole (M=mass, a=angular momentum per unit mass)"
+        "description": "Rotating black hole  (M = mass, a = spin parameter)",
+        "dim": 4,
+        "params": ["M", "a"],
     },
     "Kerr-Newman": {
-        "metric": "[[-(1-2*M*r/(r**2+a**2*cos(theta)**2)+Q**2/(r**2+a**2*cos(theta)**2)),0,0,-2*M*r*a*sin(theta)**2/(r**2+a**2*cos(theta)**2)],[0,(r**2+a**2*cos(theta)**2)/(r**2-2*M*r+a**2+Q**2),0,0],[0,0,r**2+a**2*cos(theta)**2,0],[-2*M*r*a*sin(theta)**2/(r**2+a**2*cos(theta)**2),0,0,(r**2+a**2+((2*M*r - Q**2)*a**2*sin(theta)**2)/(r**2+a**2*cos(theta)**2))*sin(theta)**2]]",
+        "metric": (
+            "[[-(1-2*M*r/(r**2+a**2*cos(theta)**2)+Q**2/(r**2+a**2*cos(theta)**2)),0,0,"
+            "-2*M*r*a*sin(theta)**2/(r**2+a**2*cos(theta)**2)],"
+            "[0,(r**2+a**2*cos(theta)**2)/(r**2-2*M*r+a**2+Q**2),0,0],"
+            "[0,0,r**2+a**2*cos(theta)**2,0],"
+            "[-2*M*r*a*sin(theta)**2/(r**2+a**2*cos(theta)**2),0,0,"
+            "(r**2+a**2+((2*M*r-Q**2)*a**2*sin(theta)**2)/(r**2+a**2*cos(theta)**2))*sin(theta)**2]]"
+        ),
         "coords": "t,r,theta,phi",
-        "description": "Rotating charged black hole (M=mass, a=angular momentum, Q=charge)"
+        "description": "Rotating charged black hole  (M, a, Q)",
+        "dim": 4,
+        "params": ["M", "a", "Q"],
     },
     "FLRW (flat)": {
-        "metric": "[[-1,0,0,0],[0,a**2,0,0],[0,0,a**2,0],[0,0,0,a**2]]",
+        "metric": (
+            "[[-1,0,0,0],[0,a**2,0,0],[0,0,a**2,0],[0,0,0,a**2]]"
+        ),
         "coords": "t,r,theta,phi",
-        "description": "Flat Friedmann-Lemaître-Robertson-Walker (a(t)=scale factor)"
+        "description": "Flat expanding universe  (a = a(t) scale factor)",
+        "dim": 4,
+        "params": ["a"],
     },
     "FLRW (spherical)": {
-        "metric": "[[-1,0,0,0],[0,a**2/(1-k*r**2),0,0],[0,0,a**2*r**2,0],[0,0,0,a**2*r**2*sin(theta)**2]]",
+        "metric": (
+            "[[-1,0,0,0],"
+            "[0,a**2/(1-k*r**2),0,0],"
+            "[0,0,a**2*r**2,0],"
+            "[0,0,0,a**2*r**2*sin(theta)**2]]"
+        ),
         "coords": "t,r,theta,phi",
-        "description": "FLRW with curvature (a(t)=scale factor, k=spatial curvature)"
+        "description": "FLRW with curvature  (a = scale factor, k = curvature)",
+        "dim": 4,
+        "params": ["a", "k"],
     },
-    "Minkowski (flat)": {
+    "Minkowski (Cartesian)": {
         "metric": "[[-1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]]",
         "coords": "t,x,y,z",
-        "description": "Flat spacetime (special relativity)"
+        "description": "Flat spacetime – all Christoffel symbols vanish",
+        "dim": 4,
+        "params": [],
+    },
+    "Minkowski (spherical)": {
+        "metric": "[[−1,0,0,0],[0,1,0,0],[0,0,r**2,0],[0,0,0,r**2*sin(theta)**2]]",
+        "coords": "t,r,theta,phi",
+        "description": "Flat spacetime in spherical polar coordinates",
+        "dim": 4,
+        "params": [],
+    },
+    "de Sitter": {
+        "metric": (
+            "[[-(1-Lambda*r**2/3),0,0,0],"
+            "[0,1/(1-Lambda*r**2/3),0,0],"
+            "[0,0,r**2,0],"
+            "[0,0,0,r**2*sin(theta)**2]]"
+        ),
+        "coords": "t,r,theta,phi",
+        "description": "Cosmological constant spacetime  (Λ = Lambda)",
+        "dim": 4,
+        "params": ["Lambda"],
     },
 }
+#Sidebar
+with st.sidebar:
+    st.header("Settings")
 
-# Metric selector
-selected_metric = st.selectbox(
-    "Choose a metric:",
-    options=list(METRIC_LIBRARY.keys()),
-    help="Select from predefined metrics or choose Custom to enter your own"
+    selected_metric = st.selectbox(
+        "Preset metric:",
+        list(METRIC_LIBRARY.keys()),
+        help="Choose a predefined GR metric, or 'Custom' to enter your own.",
+    )
+
+    meta = METRIC_LIBRARY[selected_metric]
+    st.markdown(
+        f"<div class='metric-info'>"
+        f"<b>Description:</b> {meta['description']}<br>"
+        f"<b>Dimension:</b> {meta['dim']}D &nbsp;|&nbsp; "
+        f"<b>Parameters:</b> {', '.join(meta['params']) if meta['params'] else 'none'}"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+
+    simplify_level = st.select_slider(
+        "Simplification level:",
+        options=["None", "Basic", "Full"],
+        value="Basic",
+        help=(
+            "None → fastest (raw expressions)  |  "
+            "Basic → cancel/expand balance  |  "
+            "Full → sp.simplify (slow for Kerr/RN)"
+        ),
+    )
+
+    parallel = st.toggle(
+        "Parallel simplification",
+        value=True,
+        help="Use threads to simplify multiple components concurrently.",
+    )
+
+    compute_mode = st.radio(
+        "Compute:",
+        ["Christoffel symbols only", "All tensors (Riemann, Ricci, Einstein)"],
+        index=0,
+    )
+
+    show_zero = st.toggle("Show zero components", value=False)
+    show_raw = st.toggle("Show raw SymPy (debug)", value=False)
+
+    st.divider()
+    st.markdown(
+        """
+        **Symbol legend**
+        - M — mass
+        - a — spin per unit mass
+        - Q — electric charge
+        - k — spatial curvature (−1, 0, +1)
+        - Λ (Lambda) — cosmological constant
+        - a(t) — FLRW scale factor
+
+        **Available functions:** `sin`, `cos`, `tan`, `exp`, `log`, `sqrt`
+        """
+    )
+    st.divider()
+    st.caption("v2 · built with SymPy & Streamlit")
+
+st.title("Christoffel Symbol Calculator")
+st.write(
+    "Compute Christoffel symbols and curvature tensors for any spacetime metric in General Relativity."
 )
 
-st.info(f"ℹ️ {METRIC_LIBRARY[selected_metric]['description']}")
+col_metric, col_coords = st.columns([3, 1])
 
-col1, col2 = st.columns([3, 1])
-
-with col1:
-    default_metric = METRIC_LIBRARY[selected_metric]["metric"]
+with col_metric:
     metric_str = st.text_area(
-        "Metric tensor:",
-        value=default_metric,
-        height=100,
-        help="Use square brackets for matrices. Diagonal metrics are faster to compute."
+        "Metric tensor  g_{μν}  (Python/SymPy list-of-lists):",
+        value=meta["metric"],
+        height=120,
+        help="Use nested square brackets.  Example diagonal entry: -(1-2*M/r)",
     )
 
-with col2:
-    st.write("**Coordinates:**")
-    default_coords = METRIC_LIBRARY[selected_metric]["coords"]
+with col_coords:
     coord_input = st.text_input(
-        "Order of coordinates",
-        value=default_coords,
-        help="Comma-separated list matching metric dimension"
+        "Coordinates (comma-separated):",
+        value=meta["coords"],
+        help="Must match the metric dimension.",
     )
 
-# Computation
-if st.button("Compute Christoffel Symbols", type="primary"):
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    
-    try:
-        # Initialize symbols and functions
-        status_text.text("Initializing symbols...")
-        progress_bar.progress(5)
-        r, theta, phi, t = sp.symbols('r theta phi t', real=True)
-        x, y, z = sp.symbols('x y z', real=True)
-        M, a_param, Lambda, Q, k = sp.symbols('M a Lambda Q k', real=True, positive=True)
-        # Define scale factor a(t) for FLRW metrics; keep Kerr/Kerr-Newman 'a' as a constant parameter
-        scale_factor = sp.Function('a')(t)
-        
-        # Use a(t) only for FLRW metrics; otherwise treat 'a' as constant spin parameter
-        if "FLRW" in selected_metric:
-            a_for_metric = scale_factor
-        else:
-            a_for_metric = a_param
-        
-        # Safe evaluation context with all necessary functions and symbols
-        safe_dict = {
-            "r": r, "theta": theta, "phi": phi, "t": t,
-            "x": x, "y": y, "z": z,
-            "M": M, "a": a_for_metric, "Lambda": Lambda, "Q": Q, "k": k,
-            "sin": sp.sin, "cos": sp.cos, "tan": sp.tan,
-            "exp": sp.exp, "log": sp.log, "ln": sp.log,
-            "sqrt": sp.sqrt, "pi": sp.pi,
-            "abs": sp.Abs, "sign": sp.sign
-        }
-        
-        status_text.text("Parsing metric tensor...")
-        progress_bar.progress(10)
-        
-        # Parse and validate metric with restricted eval environment
-        try:
-            metric = sp.Matrix(eval(metric_str, {"__builtins__": {}}, safe_dict))
-            progress_bar.progress(20)
-            status_text.text("Metric parsed successfully...")
-        except SyntaxError:
-            st.error("❌ Syntax Error: Please check your matrix format. Use [[row1], [row2], ...] format.")
-            st.stop()
-        except NameError as e:
-            st.error(f"❌ Unknown symbol or function: {e}. Use only supported functions and coordinates.")
-            st.stop()
-        except Exception as e:
-            st.error(f"❌ Error parsing metric: {e}")
-            st.stop()
 
-        status_text.text("Validating coordinate system...")
-        progress_bar.progress(30)
-        
-        # Parse coordinate input
-        coord_names = [c.strip() for c in coord_input.split(',')]
-        if len(coord_names) != metric.shape[0]:
-            st.error(f"❌ Number of coordinates ({len(coord_names)}) must match metric dimension ({metric.shape[0]})")
-            st.stop()
-        
-        # Map coordinate names to symbols
-        coord_map = {'t': t, 'r': r, 'theta': theta, 'phi': phi, 'x': x, 'y': y, 'z': z}
+#cached 
+@st.cache_data(show_spinner=False)
+def _cached_christoffel(metric_str: str, coords_str: str, level: str, par: bool):
+    """Parse + compute Christoffel, return Gamma and coord list."""
+    coords_raw = [c.strip() for c in coords_str.split(",")]
+    coord_syms = [sp.Symbol(c) for c in coords_raw]
+    allowed = {
+        "sin": sp.sin, "cos": sp.cos, "tan": sp.tan,
+        "exp": sp.exp, "log": sp.log, "sqrt": sp.sqrt,
+        **{str(s): s for s in coord_syms},
+        "M": sp.Symbol("M"), "a": sp.Symbol("a"),
+        "Q": sp.Symbol("Q"), "k": sp.Symbol("k"),
+        "Lambda": sp.Symbol("Lambda"), "pi": sp.pi,
+    }
+    g_list = eval(metric_str, {"__builtins__": {}}, allowed)  # noqa: S307
+    g = sp.Matrix(g_list)
+    Gamma = compute_christoffel(
+        g, coord_syms, level, symmetrize=True, parallel=par
+    )
+    return Gamma, coord_syms, g
+
+
+@st.cache_data(show_spinner=False)
+def _cached_all_tensors(metric_str: str, coords_str: str, level: str, par: bool):
+    """Parse + compute all tensors."""
+    coords_raw = [c.strip() for c in coords_str.split(",")]
+    coord_syms = [sp.Symbol(c) for c in coords_raw]
+    allowed = {
+        "sin": sp.sin, "cos": sp.cos, "tan": sp.tan,
+        "exp": sp.exp, "log": sp.log, "sqrt": sp.sqrt,
+        **{str(s): s for s in coord_syms},
+        "M": sp.Symbol("M"), "a": sp.Symbol("a"),
+        "Q": sp.Symbol("Q"), "k": sp.Symbol("k"),
+        "Lambda": sp.Symbol("Lambda"), "pi": sp.pi,
+    }
+    g_list = eval(metric_str, {"__builtins__": {}}, allowed)  # noqa: S307
+    g = sp.Matrix(g_list)
+    result = compute_all_tensors(g, coord_syms, level, symmetrize=True, parallel=par)
+    return result, coord_syms, g
+
+if st.button("Compute", type="primary", use_container_width=False):
+    with st.spinner("Computing … (large metrics like Kerr may take 10–30 s)"):
         try:
-            coords_in_metric = [coord_map[name] for name in coord_names]
-        except KeyError as e:
-            st.error(f"❌ Unknown coordinate: {e}. Use: t, r, theta, phi, x, y, z")
-            st.stop()
-        
-        # Validate metric properties
-        if metric.shape[0] != metric.shape[1]:
-            st.error("❌ Metric must be a square matrix!")
-            st.stop()
-        elif metric.shape[0] > 4:
-            st.warning("⚠️ Large metrics may take considerable time to compute.")
-        
-        # Check if metric is symmetric
-        if metric != metric.T:
-            st.warning("⚠️ Warning: Metric should be symmetric. Using symmetrized version.")
-            metric = (metric + metric.T) / 2
-        
-        # Display the metric
-        st.success("✓ Metric tensor validation complete!")
-        
-        # Identify parameters from metric
-        status_text.text("Analyzing metric parameters...")
-        progress_bar.progress(40)
-        free_syms = list(metric.free_symbols)
-        params_in_metric = [s for s in free_syms if s not in coords_in_metric]
-        
-        st.write(f"**Coordinates:** {', '.join(coord_names)}")
-        if params_in_metric:
-            st.write(f"**Parameters:** {', '.join(str(s) for s in params_in_metric)}")
-        
-        st.write("#### Metric Tensor:")
-        st.latex(r"g_{\mu\nu} = " + sp.latex(metric))
-        
-        # Compute Christoffel symbols with explicit coordinates
-        status_text.text("Computing Christoffel symbols...")
-        progress_bar.progress(50)
-        
-        def progress_callback(percentage, message):
-            # Map the compute_christoffel progress (0-100) to our remaining progress (50-90)
-            mapped_progress = 50 + int(percentage * 0.4)
-            progress_bar.progress(mapped_progress)
-            status_text.text(message)
-        
-        Gamma = compute_christoffel(metric, coord_symbols=coords_in_metric, progress_callback=progress_callback)
-        
-        status_text.text("Formatting results...")
-        progress_bar.progress(90)
-        
-        # Display results
-        st.write("### Non-zero Christoffel Symbols")
-        st.write(r"Using the convention: $\Gamma^\lambda_{\mu\nu} = \frac{1}{2}g^{\lambda\sigma}\left(\frac{\partial g_{\sigma\mu}}{\partial x^\nu} + \frac{\partial g_{\sigma\nu}}{\partial x^\mu} - \frac{\partial g_{\mu\nu}}{\partial x^\sigma}\right)$")
-        
-        # Coordinate labels for LaTeX display
-        coord_labels = []
-        for name in coord_names:
-            if name == 'theta':
-                coord_labels.append(r'\theta')
-            elif name == 'phi':
-                coord_labels.append(r'\phi')
+            if compute_mode.startswith("Christoffel"):
+                Gamma, coord_syms, g = _cached_christoffel(
+                    metric_str, coord_input, simplify_level, parallel
+                )
+                result = None
             else:
-                coord_labels.append(name)
-        
-        # Count and display non-zero symbols
-        non_zero_count = 0
-        results = []
-        displayed = set()  # Track which we've already shown (for symmetry)
-        
-        for l in range(len(Gamma)):
-            for m in range(len(Gamma[l])):
-                for n in range(len(Gamma[l][m])):
-                    val = Gamma[l][m][n]
-                    if val != 0:
-                        # Use symmetry to avoid duplicates
-                        key = (l, min(m, n), max(m, n))
-                        if key not in displayed:
-                            displayed.add(key)
-                            non_zero_count += 1
-                            results.append((l, m, n, val))
-        
-        if non_zero_count == 0:
-            st.info("All Christoffel symbols are zero (flat spacetime).")
+                result, coord_syms, g = _cached_all_tensors(
+                    metric_str, coord_input, simplify_level, parallel
+                )
+                Gamma = result["Gamma"]
+        except Exception as err:
+            st.error(f"Error during computation:\n\n`{err}`")
+            st.stop()
+
+    dim = len(Gamma)
+    with st.expander("Parsed metric tensor", expanded=False):
+        st.latex(r"g_{\mu\nu} = " + sp.latex(g))
+
+    # Tab layout 
+    tabs_labels = ["Γ  Christoffel"]
+    if result is not None:
+        tabs_labels += ["ℝ  Riemann", "Ric  Ricci tensor", "R  Ricci scalar", "G  Einstein"]
+
+    tabs = st.tabs(tabs_labels)
+
+    #  Tab 0 : Christoffel 
+    with tabs[0]:
+        st.subheader("Christoffel Symbols  Γ^λ_{μν}")
+
+        nz_list = nonzero_christoffel(Gamma, coord_syms)
+        nz_count = len(nz_list)
+        total_independent = dim * dim * (dim + 1) // 2
+        zero_count = total_independent - nz_count
+
+        st.markdown(
+            f"<div class='count-banner'>"
+            f"Non-zero independent components: <b>{nz_count}</b> / {total_independent}"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+        if nz_count == 0:
+            st.markdown(
+                "<div class='zero-banner'> All Christoffel symbols vanish — flat metric!</div>",
+                unsafe_allow_html=True,
+            )
         else:
-            st.info(f"Found {non_zero_count} non-zero independent symbols")
-            # Display in a single container for better performance
-            for l, m, n, val in results:
-                st.latex(f"\\Gamma^{{{coord_labels[l]}}}_{{{coord_labels[m]} {coord_labels[n]}}} = {sp.latex(val)}")
-        
-        # Complete the progress bar
-        status_text.text("Calculation complete!")
-        progress_bar.progress(100)
-        
-        # Option to show all components (including zeros)
-        st.write("---")
-        if st.checkbox("Show all components (including zeros)"):
-            st.write("#### Complete Christoffel Symbol Tensor:")
-            for l in range(len(Gamma)):
-                with st.expander(f"Γ^{coord_labels[l]}_{{μν}}"):
-                    for m in range(len(Gamma[l])):
-                        for n in range(len(Gamma[l][m])):
-                            val = Gamma[l][m][n]
-                            st.latex(f"\\Gamma^{{{coord_labels[l]}}}_{{{coord_labels[m]} {coord_labels[n]}}} = {sp.latex(val)}")
+            # Build LaTeX export string
+            latex_lines = [
+                r"\documentclass{article}",
+                r"\usepackage{amsmath}",
+                r"\begin{document}",
+                r"\section*{Christoffel Symbols}",
+            ]
+            for label, val in nz_list:
+                st.markdown(
+                    f"<div class='gamma-card'><div class='gamma-label'>{label}</div>",
+                    unsafe_allow_html=True,
+                )
+                st.latex(label + r" = " + sp.latex(val))
+                if show_raw:
+                    st.code(str(val), language="python")
+                st.markdown("</div>", unsafe_allow_html=True)
+                latex_lines.append(r"$$" + label + r" = " + sp.latex(val) + r"$$")
 
-    except Exception as e:
-        st.error(f"❌ Error: {e}")
-        st.write("Please check your input and try again.")
+            latex_lines.append(r"\end{document}")
+            st.download_button(
+                "Download as LaTeX (.tex)",
+                "\n".join(latex_lines),
+                file_name="christoffel_symbols.tex",
+                mime="text/plain",
+            )
 
-# Footer
-st.markdown("---")
-st.caption("Built with Streamlit and SymPy | Christoffel symbols are computed symbolically")
+        if show_zero and zero_count > 0:
+            st.markdown(f"**{zero_count} independent components are zero** (not shown)")
+
+    # Riemann 
+    if result is not None:
+        with tabs[1]:
+            st.subheader("Riemann Curvature Tensor  R^ρ_{σμν}")
+            R_tensor = result["Riemann"]
+            nz_riemann = []
+            for rho in range(dim):
+                for sigma in range(dim):
+                    for mu in range(dim):
+                        for nu in range(mu + 1, dim):
+                            val = R_tensor[rho][sigma][mu][nu]
+                            if val != sp.S.Zero:
+                                c = [sp.latex(coord_syms[i]) for i in [rho, sigma, mu, nu]]
+                                lbl = rf"R^{{{c[0]}}}{{{c[1]}}}{{{c[2]}}}{{{c[3]}}}"
+                                nz_riemann.append((lbl, val))
+
+            st.markdown(
+                f"<div class='count-banner'>Non-zero independent components: <b>{len(nz_riemann)}</b></div>",
+                unsafe_allow_html=True,
+            )
+            if not nz_riemann:
+                st.markdown(
+                    "<div class='zero-banner'> Riemann tensor vanishes — flat spacetime!</div>",
+                    unsafe_allow_html=True,
+                )
+            for lbl, val in nz_riemann:
+                st.markdown(f"<div class='gamma-card'><div class='gamma-label'>{lbl}</div>", unsafe_allow_html=True)
+                st.latex(lbl + " = " + sp.latex(val))
+                if show_raw:
+                    st.code(str(val), language="python")
+                st.markdown("</div>", unsafe_allow_html=True)
+
+        # Ricci tensor
+        with tabs[2]:
+            st.subheader("Ricci Tensor  R_{μν}")
+            Ric = result["Ricci"]
+            nz_ricci = []
+            for mu in range(dim):
+                for nu in range(mu, dim):
+                    val = Ric[mu][nu]
+                    if val != sp.S.Zero:
+                        cm, cn = sp.latex(coord_syms[mu]), sp.latex(coord_syms[nu])
+                        lbl = rf"R_{{{cm}{cn}}}"
+                        nz_ricci.append((lbl, val))
+
+            st.markdown(
+                f"<div class='count-banner'>Non-zero independent components: <b>{len(nz_ricci)}</b></div>",
+                unsafe_allow_html=True,
+            )
+            if not nz_ricci:
+                st.markdown(
+                    "<div class='zero-banner'> Ricci tensor vanishes — Ricci flat metric!</div>",
+                    unsafe_allow_html=True,
+                )
+            for lbl, val in nz_ricci:
+                st.markdown(f"<div class='gamma-card'><div class='gamma-label'>{lbl}</div>", unsafe_allow_html=True)
+                st.latex(lbl + " = " + sp.latex(val))
+                if show_raw:
+                    st.code(str(val), language="python")
+                st.markdown("</div>", unsafe_allow_html=True)
+
+        # Ricci scalar 
+        with tabs[3]:
+            st.subheader("Ricci Scalar  R")
+            R_sc = result["R"]
+            if R_sc == sp.S.Zero:
+                st.markdown(
+                    "<div class='zero-banner'> Ricci scalar R = 0</div>",
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.latex(r"R = " + sp.latex(R_sc))
+                if show_raw:
+                    st.code(str(R_sc), language="python")
+
+        # Einstein Tensor
+        with tabs[4]:
+            st.subheader("Einstein Tensor  G_{μν} = R_{μν} − ½ g_{μν} R")
+            G = result["Einstein"]
+            nz_G = []
+            for mu in range(dim):
+                for nu in range(mu, dim):
+                    val = G[mu][nu]
+                    if val != sp.S.Zero:
+                        cm, cn = sp.latex(coord_syms[mu]), sp.latex(coord_syms[nu])
+                        lbl = rf"G_{{{cm}{cn}}}"
+                        nz_G.append((lbl, val))
+
+            st.markdown(
+                f"<div class='count-banner'>Non-zero independent components: <b>{len(nz_G)}</b></div>",
+                unsafe_allow_html=True,
+            )
+            if not nz_G:
+                st.markdown(
+                    "<div class='zero-banner'>Einstein tensor vanishes.</div>",
+                    unsafe_allow_html=True,
+                )
+            for lbl, val in nz_G:
+                st.markdown(f"<div class='gamma-card'><div class='gamma-label'>{lbl}</div>", unsafe_allow_html=True)
+                st.latex(lbl + " = " + sp.latex(val))
+                if show_raw:
+                    st.code(str(val), language="python")
+                st.markdown("</div>", unsafe_allow_html=True)
+
+else:
+    st.info(
+        "Select a metric (or enter a custom one), configure settings in the sidebar, then press **🚀 Compute**."
+    )
